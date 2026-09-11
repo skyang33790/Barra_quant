@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "backtesting-frameworks": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/quantitative-trading/skills/backtesting-frameworks/SKILL.md",
+      "computedHash": "792069fc176d944805f2136a8f98aa7c77ef138c25678baa03d282c5fe18159a"
+    },
+    "ml4t-define-universe": {
+      "source": "ml4t/skills",
+      "sourceType": "github",
+      "skillPath": "data/define-universe/SKILL.md",
+      "computedHash": "d6527de0ee5a469906d53f2493c270a007e6c3463db0aa6cf28239b0eb87f860"
+    },
+    "ml4t-factor-research": {
+      "source": "ml4t/skills",
+      "sourceType": "github",
+      "skillPath": "workflows/factor-research/SKILL.md",
+      "computedHash": "fd83b8b28807d09189c5b470a76955ebdf88658ecb982d7db767eb3b7a522e1d"
+    },
+    "ml4t-lookahead-bias": {
+      "source": "ml4t/skills",
+      "sourceType": "github",
+      "skillPath": "concepts/lookahead-bias/SKILL.md",
+      "computedHash": "2ef910e35225954e4bb5b3e76dbaf4083c87eb9274be28097b0c7214725e99d1"
+    },
+    "ml4t-point-in-time": {
+      "source": "ml4t/skills",
+      "sourceType": "github",
+      "skillPath": "concepts/point-in-time/SKILL.md",
+      "computedHash": "cb1bd162b8dad72ce4550a4aa33ada9daafa01f473d864fa3a8f70a83b191bc3"
+    }
+  }
+}
