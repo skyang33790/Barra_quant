@@ -1,6 +1,6 @@
 {
-  "database": "data/warehouse/china_stock.duckdb",
-  "source_manifest": "data/normalized/china-stock-data/manifest.json",
+  "database": "data/warehouse/china_stock_08c4692f2b56d3ae47feae93de5576d4c626be8a.duckdb",
+  "source_manifest": "data/normalized/china-stock-data/08c4692f2b56d3ae47feae93de5576d4c626be8a/manifest.json",
   "output_root": "artifacts/runs",
   "mode": "SMOKE_TEST",
   "initial_cash": 10000000.0,

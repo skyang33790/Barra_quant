@@ -5,9 +5,10 @@ This project contains a minimal, reproducible pipeline for the public
 
 ```text
 upstream Git snapshot
-  -> data/raw/china-stock-data
-  -> data/normalized/china-stock-data/*.parquet
-  -> data/warehouse/china_stock.duckdb
+  -> data/raw/_checkouts/china-stock-data
+  -> data/raw/china-stock-data/<source_commit>
+  -> data/normalized/china-stock-data/<source_commit>/*.parquet
+  -> data/warehouse/china_stock_<source_commit>.duckdb
 ```
 
 ## Data contract
@@ -31,6 +32,7 @@ Use the project's required `tsffids` environment:
 
 ```powershell
 conda activate tsffids
+python -m pip install -e . --no-deps
 python scripts/china_stock_pipeline.py all
 ```
 
@@ -38,8 +40,8 @@ Individual stages are also available:
 
 ```powershell
 python scripts/china_stock_pipeline.py download
-python scripts/china_stock_pipeline.py normalize
-python scripts/china_stock_pipeline.py load
+python scripts/china_stock_pipeline.py normalize --source-commit <source_commit>
+python scripts/china_stock_pipeline.py load --source-commit <source_commit>
 ```
 
 `download` creates a shallow sparse checkout and later uses `git pull --ff-only`.
@@ -52,7 +54,10 @@ rechecks row counts and data quality.
 ```python
 import duckdb
 
-con = duckdb.connect("data/warehouse/china_stock.duckdb", read_only=True)
+con = duckdb.connect(
+    "data/warehouse/china_stock_<source_commit>.duckdb",
+    read_only=True,
+)
 bars = con.execute("""
     SELECT trade_date, symbol, close, volume
     FROM prices
@@ -70,5 +75,24 @@ between the date stored in a row and its source filename.
 Run the regression tests with:
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m pytest tests -v
 ```
+
+## V1a strategy smoke run
+
+V1a validates engineering behavior only. It does not establish that any factor or
+portfolio is effective. The bundled source lacks complete point-in-time security
+status and corporate actions.
+
+```powershell
+conda activate tsffids
+python -m pip install -e . --no-deps
+python scripts/china_stock_pipeline.py all
+python -m barra_quant.run --config configs/v1a_smoke.json
+python -m pytest tests -v
+```
+
+Consume a run only when `artifacts/runs/<run_id>/_SUCCESS` exists. Inspect
+`report.md`, `metrics.json`, `orders.parquet`, `fills.parquet`, `positions.parquet`,
+and `nav.parquet` together; a positive return in this short sample is not research
+evidence.

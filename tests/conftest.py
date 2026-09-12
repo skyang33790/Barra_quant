@@ -35,3 +35,78 @@ def make_price_panel(symbol_count: int = 120, periods: int = 140) -> pd.DataFram
 @pytest.fixture
 def synthetic_prices() -> pd.DataFrame:
     return make_price_panel()
+
+
+def _smoke_config(database: str, manifest: str) -> dict[str, object]:
+    return {
+        "database": database,
+        "source_manifest": manifest,
+        "output_root": "artifacts/runs",
+        "mode": "SMOKE_TEST",
+        "initial_cash": 10_000_000.0,
+        "top_n": 50,
+        "min_cross_section": 100,
+        "min_history_days": 60,
+        "liquidity_window": 20,
+        "max_position_to_adv": 0.01,
+        "min_avg_amount": 20_000_000.0,
+        "horizons": [1, 5, 10, 20],
+        "primary_horizon": 5,
+        "winsor_lower": 0.01,
+        "winsor_upper": 0.99,
+        "beta_window": 120,
+        "beta_min_observations": 100,
+        "volume_cap": 0.05,
+        "slippage_bps": 5.0,
+        "slippage_stress_bps": [10.0, 20.0],
+        "annualization_days": 252,
+        "risk_free_rate": 0.0,
+    }
+
+
+@pytest.fixture
+def synthetic_v1a_config(
+    tmp_path: Path,
+    synthetic_prices: pd.DataFrame,
+) -> Path:
+    database = tmp_path / "data" / "warehouse" / "synthetic.duckdb"
+    manifest_path = tmp_path / "data" / "normalized" / "synthetic" / "manifest.json"
+    config_path = tmp_path / "configs" / "v1a_smoke.json"
+    database.parent.mkdir(parents=True)
+    manifest_path.parent.mkdir(parents=True)
+    config_path.parent.mkdir(parents=True)
+    with duckdb.connect(str(database)) as connection:
+        connection.register("synthetic_prices", synthetic_prices)
+        connection.execute("CREATE TABLE prices AS SELECT * FROM synthetic_prices")
+    manifest = {
+        "source_commit": "synthetic-commit",
+        "source_committed_at": "2026-09-11T00:00:00+08:00",
+        "files": [],
+        "calendar_source": "inferred_from_prices",
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True), encoding="utf-8"
+    )
+    config = _smoke_config(
+        database.relative_to(tmp_path).as_posix(),
+        manifest_path.relative_to(tmp_path).as_posix(),
+    )
+    config_path.write_text(
+        json.dumps(config, sort_keys=True), encoding="utf-8"
+    )
+    return config_path
+
+
+@pytest.fixture
+def project_smoke_config() -> Path:
+    root = Path(__file__).resolve().parents[1]
+    config_path = root / "configs" / "v1a_smoke.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    missing = [
+        root / config[key]
+        for key in ("database", "source_manifest")
+        if not (root / config[key]).exists()
+    ]
+    if missing:
+        pytest.skip(f"materialize current commit-keyed data first: {missing}")
+    return config_path

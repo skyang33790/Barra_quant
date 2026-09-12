@@ -118,17 +118,22 @@ def score_and_target(
         score_column = f"{factor}_score"
         panel[score_column] = np.nan
         for group_index in panel.groupby("signal_date", sort=True).groups.values():
+            base_eligible = (
+                panel.loc[group_index, "base_eligible"]
+                .astype("boolean")
+                .fillna(False)
+                .to_numpy(dtype=bool)
+            )
             eligible_index = panel.index[group_index][
-                panel.loc[group_index, "base_eligible"].fillna(False)
+                base_eligible
             ]
             panel.loc[eligible_index, score_column] = _rank_factor(
                 panel.loc[eligible_index], factor, 0.01, 0.99
             ).to_numpy()
     scores = [f"{factor}_score" for factor in FACTOR_COLUMNS]
     panel["factor_complete"] = panel[scores].notna().all(axis=1)
-    panel["eligible"] = (
-        panel["base_eligible"].fillna(False) & panel["factor_complete"]
-    )
+    base_eligible = panel["base_eligible"].astype("boolean").fillna(False)
+    panel["eligible"] = base_eligible & panel["factor_complete"]
     panel["composite_score"] = panel[scores].mean(axis=1).where(panel["eligible"])
     panel["composite_rank"] = np.nan
     eligible = panel.loc[panel["eligible"]].sort_values(
@@ -363,7 +368,7 @@ def _coverage_and_extremes(
     coverage_rows: list[dict[str, object]] = []
     extreme_rows: list[dict[str, object]] = []
     for signal_date, group in panel.groupby("signal_date", sort=True):
-        base_mask = group["base_eligible"].fillna(False)
+        base_mask = group["base_eligible"].astype("boolean").fillna(False)
         eligible_count = int(base_mask.sum())
         for factor in factors:
             values = group.loc[base_mask, factor].dropna()
@@ -486,6 +491,9 @@ def _rank_and_stability(
                 how="left",
                 validate="one_to_one",
             )
+            complete["rank_ic"] = pd.to_numeric(
+                complete["rank_ic"], errors="coerce"
+            ).astype(float)
             rank_frames.append(complete)
             summary = hac_ic_summary(complete["rank_ic"], horizon)
             hac_rows.append({"factor": factor, "horizon": horizon, **summary})
