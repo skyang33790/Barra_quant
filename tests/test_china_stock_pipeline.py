@@ -6,8 +6,16 @@ import unittest
 from pathlib import Path
 
 import duckdb
+import pytest
 
-from scripts.china_stock_pipeline import SourceVersion, load_duckdb, normalize
+from scripts.china_stock_pipeline import (
+    SourceVersion,
+    load_duckdb,
+    materialize_snapshot,
+    normalize,
+    project_paths,
+    sha256_file,
+)
 
 
 class ChinaStockPipelineTest(unittest.TestCase):
@@ -75,6 +83,29 @@ class ChinaStockPipelineTest(unittest.TestCase):
             normalize(self.raw, self.root / "normalized", self.version)
 
 
+def test_materialize_snapshot_is_immutable(tmp_path):
+    source = tmp_path / "checkout" / "data"
+    source.mkdir(parents=True)
+    raw_file = source / "sample.csv"
+    raw_file.write_text("a,b\n1,2\n", encoding="utf-8")
+    version = SourceVersion("abc123", "2026-06-05T15:15:04+08:00")
+
+    snapshot = materialize_snapshot(source, tmp_path / "raw", version)
+    manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
+
+    assert snapshot.name == "abc123"
+    assert manifest["files"][0]["sha256"] == sha256_file(snapshot / "data" / "sample.csv")
+    raw_file.write_text("changed\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="immutable snapshot"):
+        materialize_snapshot(source, tmp_path / "raw", version)
+
+
+def test_normalized_path_is_keyed_by_source_commit(tmp_path):
+    raw, normalized, database = project_paths(tmp_path, source_commit="abc123")
+    assert raw == tmp_path / "data" / "raw" / "china-stock-data" / "abc123"
+    assert normalized == tmp_path / "data" / "normalized" / "china-stock-data" / "abc123"
+    assert database == tmp_path / "data" / "warehouse" / "china_stock_abc123.duckdb"
+
+
 if __name__ == "__main__":
     unittest.main()
-

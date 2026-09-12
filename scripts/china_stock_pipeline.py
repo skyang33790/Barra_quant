@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -79,6 +80,56 @@ def source_version(raw_repo: Path) -> SourceVersion:
     output = _git(raw_repo, "show", "-s", "--format=%H%n%cI", "HEAD", capture=True)
     commit, committed_at = output.splitlines()
     return SourceVersion(commit=commit, committed_at=committed_at)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def materialize_snapshot(
+    source_data: Path,
+    snapshot_root: Path,
+    version: SourceVersion,
+) -> Path:
+    destination = snapshot_root / version.commit
+    files = sorted(path for path in source_data.rglob("*") if path.is_file())
+    expected = [
+        {
+            "path": (Path("data") / path.relative_to(source_data)).as_posix(),
+            "bytes": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+        for path in files
+    ]
+    if destination.exists():
+        manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
+        if manifest["files"] != expected:
+            raise ValueError(f"immutable snapshot mismatch: {destination}")
+        return destination
+
+    staging = snapshot_root / f".{version.commit}.staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    shutil.copytree(source_data, staging / "data")
+    manifest = {
+        "source_repo": REPO_URL,
+        "source_commit": version.commit,
+        "source_committed_at": version.committed_at,
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": 1,
+        "files": expected,
+    }
+    (staging / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    os.replace(staging, destination)
+    return destination
 
 
 def _create_raw_price_view(con: duckdb.DuckDBPyConnection, raw_repo: Path) -> None:
@@ -170,6 +221,17 @@ def normalize(
     version: SourceVersion | None = None,
 ) -> dict[str, object]:
     """Rebuild deterministic normalized Parquet files from the raw snapshot."""
+    raw_manifest_path = raw_repo / "manifest.json"
+    raw_manifest: dict[str, object] = {}
+    if raw_manifest_path.is_file():
+        raw_manifest = json.loads(raw_manifest_path.read_text(encoding="utf-8"))
+        snapshot_version = SourceVersion(
+            commit=str(raw_manifest["source_commit"]),
+            committed_at=str(raw_manifest["source_committed_at"]),
+        )
+        if version is not None and version != snapshot_version:
+            raise ValueError("snapshot manifest version mismatch")
+        version = snapshot_version
     version = version or source_version(raw_repo)
     company_json = raw_repo / "data" / "company" / "companies.json"
     if not company_json.is_file():
@@ -250,6 +312,7 @@ def normalize(
             )
 
         manifest = {
+            **raw_manifest,
             "source_repo": REPO_URL,
             "source_commit": version.commit,
             "source_committed_at": version.committed_at,
@@ -355,12 +418,31 @@ def load_duckdb(normalized_dir: Path, database: Path) -> dict[str, object]:
     return db_metrics
 
 
-def project_paths(project_root: Path) -> tuple[Path, Path, Path]:
+def project_paths(
+    project_root: Path,
+    source_commit: str,
+) -> tuple[Path, Path, Path]:
     return (
-        project_root / "data" / "raw" / "china-stock-data",
-        project_root / "data" / "normalized" / "china-stock-data",
-        project_root / "data" / "warehouse" / "china_stock.duckdb",
+        project_root / "data" / "raw" / "china-stock-data" / source_commit,
+        project_root / "data" / "normalized" / "china-stock-data" / source_commit,
+        project_root / "data" / "warehouse" / f"china_stock_{source_commit}.duckdb",
     )
+
+
+def _checkout_path(project_root: Path) -> Path:
+    checkout = project_root / "data" / "raw" / "_checkouts" / "china-stock-data"
+    legacy = project_root / "data" / "raw" / "china-stock-data"
+    if (legacy / ".git").is_dir():
+        root = project_root.resolve()
+        legacy_resolved = legacy.resolve()
+        checkout_resolved = checkout.resolve()
+        if not legacy_resolved.is_relative_to(root) or not checkout_resolved.is_relative_to(root):
+            raise RuntimeError("checkout migration paths must stay under project root")
+        if checkout.exists():
+            raise RuntimeError(f"Checkout destination already exists: {checkout}")
+        checkout.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(checkout))
+    return checkout
 
 
 def main() -> None:
@@ -375,11 +457,29 @@ def main() -> None:
         type=Path,
         default=Path(__file__).resolve().parents[1],
     )
+    parser.add_argument(
+        "--source-commit",
+        help="Exact source commit for normalize or load",
+    )
     args = parser.parse_args()
-    raw_repo, normalized_dir, database = project_paths(args.project_root.resolve())
+    project_root = args.project_root.resolve()
+    source_commit = args.source_commit
 
     if args.command in {"download", "all"}:
-        download(raw_repo)
+        checkout = _checkout_path(project_root)
+        download(checkout)
+        version = source_version(checkout)
+        raw_repo = materialize_snapshot(
+            checkout / "data",
+            project_root / "data" / "raw" / "china-stock-data",
+            version,
+        )
+        source_commit = version.commit
+        if args.command == "download":
+            print((raw_repo / "manifest.json").read_text(encoding="utf-8"), end="")
+    if source_commit is None:
+        parser.error("--source-commit is required for normalize and load")
+    raw_repo, normalized_dir, database = project_paths(project_root, source_commit)
     if args.command in {"normalize", "all"}:
         manifest = normalize(raw_repo, normalized_dir)
         print(json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -390,4 +490,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
