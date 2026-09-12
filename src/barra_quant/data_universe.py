@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 
@@ -92,3 +93,100 @@ def load_data(database: Path, source_manifest_path: Path) -> DataBundle:
         calendar=calendar,
         source_manifest=manifest,
     )
+
+
+def classify_board(symbol: str) -> str:
+    value = symbol.lower()
+    if value.startswith("sh900") or value.startswith("sz200"):
+        return "EXCLUDED_B_SHARE"
+    if value.startswith(("sh688", "sh689")):
+        return "STAR"
+    if value.startswith(("sz300", "sz301")):
+        return "CHINEXT"
+    if value.startswith("bj"):
+        return "BSE"
+    if value.startswith(("sh", "sz")) and value[2:].isdigit() and len(value) == 8:
+        return "MAIN"
+    return "INVALID"
+
+
+def build_base_universe(
+    prices: pd.DataFrame,
+    signal_dates: pd.DatetimeIndex,
+    config: UniverseConfig,
+) -> pd.DataFrame:
+    ordered = prices.sort_values(["symbol", "trade_date"], kind="mergesort").copy()
+    grouped = ordered.groupby("symbol", sort=False)
+    ordered["history_days"] = grouped.cumcount() + 1
+    ordered["adv20_amount"] = grouped["amount"].transform(
+        lambda values: values.rolling(
+            config.liquidity_window, min_periods=config.liquidity_window
+        ).mean()
+    )
+    ordered["adv20_volume"] = grouped["volume"].transform(
+        lambda values: values.rolling(
+            config.liquidity_window, min_periods=config.liquidity_window
+        ).mean()
+    )
+    panel = ordered[ordered["trade_date"].isin(signal_dates)].copy()
+    panel = panel.rename(columns={"trade_date": "signal_date"})
+    panel["board"] = panel["symbol"].map(classify_board)
+    target_value = config.initial_cash / config.top_n
+    panel["base_eligible"] = (
+        panel["board"].isin(["MAIN", "STAR", "CHINEXT", "BSE"])
+        & panel["history_days"].ge(config.min_history_days)
+        & panel["adv20_amount"].ge(config.min_avg_amount)
+        & (target_value <= panel["adv20_amount"] * config.max_position_to_adv)
+    )
+    panel["universe_reason"] = np.select(
+        [
+            panel["board"].isin(["EXCLUDED_B_SHARE", "INVALID"]),
+            panel["history_days"].lt(config.min_history_days),
+            panel["adv20_amount"].lt(config.min_avg_amount),
+            target_value > panel["adv20_amount"] * config.max_position_to_adv,
+        ],
+        ["MARKET_EXCLUDED", "INSUFFICIENT_HISTORY", "LOW_ABSOLUTE_LIQUIDITY", "LOW_CAPACITY"],
+        default="ELIGIBLE",
+    )
+    columns = [
+        "signal_date", "symbol", "board", "history_days", "adv20_amount",
+        "adv20_volume", "base_eligible", "universe_reason",
+    ]
+    return panel[columns].sort_values(
+        ["signal_date", "symbol"], kind="mergesort"
+    ).reset_index(drop=True)
+
+
+def infer_constraints(
+    prices: pd.DataFrame,
+    calendar: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    del calendar
+    result = prices[["trade_date", "symbol", "open", "close"]].copy()
+    result["board"] = result["symbol"].map(classify_board)
+    previous = (
+        result.sort_values(["symbol", "trade_date"])
+        .groupby("symbol")["close"]
+        .shift(1)
+    )
+    rate = result["board"].map(
+        {"MAIN": 0.10, "CHINEXT": 0.20, "STAR": 0.20, "BSE": 0.30}
+    )
+    result["is_tradable"] = True
+    result["limit_up"] = (previous * (1.0 + rate)).round(2)
+    result["limit_down"] = (previous * (1.0 - rate)).round(2)
+    result["min_buy_qty"] = result["board"].map(
+        {"MAIN": 100, "CHINEXT": 100, "STAR": 200, "BSE": 100}
+    )
+    result["qty_step"] = result["board"].map(
+        {"MAIN": 100, "CHINEXT": 100, "STAR": 1, "BSE": 1}
+    )
+    result["price_tick"] = 0.01
+    result["constraints_source"] = "inferred"
+    result["source_version"] = "v1a-inferred"
+    columns = [
+        "trade_date", "symbol", "is_tradable", "limit_up", "limit_down",
+        "min_buy_qty", "qty_step", "price_tick", "constraints_source",
+        "source_version",
+    ]
+    return result[columns]
